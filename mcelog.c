@@ -87,6 +87,18 @@ static int debug_numerrors;
 int imc_log = -1;
 static int check_only = 0;
 
+#ifdef CLEAR_TELEM
+static char *recordfile = "/var/log/mcelog-telem";
+int have_telem = 0;
+
+static const char *arstate[4] = {
+	[0] = "UCNA",
+	[1] = "AR",
+	[2] = "SRAO",
+	[3] = "SRAR"
+};
+#endif /* CLEAR_TELEM */
+
 static int is_cpu_supported(void);
 
 
@@ -1232,6 +1244,15 @@ static void process(int fd, unsigned recordlen, unsigned loglen, char *buf)
 	int len, count;
 	int finish = 0, flags;
 
+#ifdef CLEAR_TELEM
+	int severity = 1;
+	char *class = NULL;
+	/* try to load telemetry api
+	 * if it fails, don't try to send a record
+	 */
+	have_telem = load_telem_api();
+#endif /* CLEAR_TELEM */
+
 	if (recordlen == 0) {
 		Wprintf("no data in mce record\n");
 		return;
@@ -1253,6 +1274,18 @@ static void process(int fd, unsigned recordlen, unsigned loglen, char *buf)
 	for (i = 0; (i < count) && !finish; i++) {
 		struct mce *mce = (struct mce *)(buf + i*recordlen);
 		mce_prepare(mce);
+#ifdef CLEAR_TELEM
+		if (have_telem) {
+			/* open telemetry log file for writing */
+			if (open_telem_file(recordfile, "w") < 0) {
+				SYSERRprintf("Cannot open logfile %s", recordfile);
+				if (!daemon_mode) {
+					exit(1);
+				}
+			}
+			severity = (mce->status & MCI_STATUS_UC) ? 4 : 2;
+		}
+#endif /* CLEAR_TELEM */
 		if (numerrors > 0 && --numerrors == 0)
 			finish = 1;
 		if (!mce_filter(mce, recordlen)) 
@@ -1264,7 +1297,51 @@ static void process(int fd, unsigned recordlen, unsigned loglen, char *buf)
 		} else
 			dump_mce_raw_ascii(mce, recordlen);
 		flushlog();
+#ifdef CLEAR_TELEM
+		if (have_telem) {
+			/* close telemetry log file so send_record can reopen */
+			if (close_telem_file() != 0) {
+				SYSERRprintf("Cannot close logfile %s", recordfile);
+				if (!daemon_mode) {
+					exit(1);
+				}
+			}
+
+			/* check proper status bits for type of error to set as
+			 * classification for payload:
+			 * corrected
+			 * SRAO - Software Recoverable Action Optional
+			 * SRAR - Software Recoverable Action Required
+			 * UCNA - Uncorrected No Action
+			 */
+			if (!(mce->status & MCI_STATUS_UC)) {
+				/* corrected error */
+				class = strdup("corrected");
+			} else if (mce->status & (MCI_STATUS_S|MCI_STATUS_AR)) {
+				/* uncorrected SRAO or SRAR */
+				class = strdup(arstate[(mce->status >> 55) & 3]);
+			} else {
+				/* uncorrected, but AR bit not set, UCNA */
+				class = strdup("UCNA");
+			}
+
+			/* do not print an error if the return is greater than 0
+			 * this means the user may have opted out
+			 */
+			if (send_record(severity, class, recordfile) < 0) {
+				SYSERRprintf("Error sending telemetry record");
+			}
+
+			free(class);
+		}
+#endif /* CLEAR_TELEM */
 	}
+#ifdef CLEAR_TELEM
+	if (have_telem) {
+		remove(recordfile);
+		unload_telem_api();
+	}
+#endif /* CLEAR_TELEM */
 
 	if (debug_numerrors && numerrors <= 0)
 		finish = 1;

@@ -14,6 +14,10 @@ int syslog_level = LOG_WARNING;
 static FILE *output_fh;
 static char *output_fn;
 
+#ifdef CLEAR_TELEM
+static FILE *telem_fh;
+#endif /* CLEAR_TELEM */
+
 int need_stdout(void)
 {
 	return !output_fh && (syslog_opt == 0);
@@ -135,6 +139,13 @@ int Wprintf(char *fmt, ...)
 		n = vfprintf(output_fh ? output_fh : stdout, fmt, ap);
 		va_end(ap);
 	}
+#ifdef CLEAR_TELEM
+	if (telem_fh) {
+		va_start(ap,fmt);
+		vfprintf(telem_fh, fmt, ap);
+		va_end(ap);
+	}
+#endif /* CLEAR_TELEM */
 	return n;
 }
 
@@ -169,3 +180,64 @@ void reopenlog(void)
 			SYSERRprintf("Cannot reopen logfile `%s'", output_fn);
 	}	
 }
+
+#ifdef CLEAR_TELEM
+#include <sys/stat.h>
+#include <libgen.h>
+
+int mkdir_p(const char *path, mode_t mode, char *cl)
+{
+	char *cl_base = NULL;
+
+	if (!strcmp(path, ".") || !strcmp(path, "/") || !strcmp(path, "//") || !strcmp(path, "..")) {
+		return 1;
+	}
+
+	cl = strdup(path);
+	cl_base = dirname(cl);
+
+	if (!mkdir_p(cl_base, mode, cl) && errno != EEXIST) {
+		return 0;
+	}
+
+	return !((mkdir(path, mode) < 0 && errno != EEXIST));
+}
+
+int open_telem_file(const char *fn, char *mode)
+{
+	struct stat st = {0};
+	int ret = 0;
+	char *cl = NULL;
+	char *dupfn = strdup(fn);
+	char *dirn = dirname(dupfn);
+
+	/* recursively create directories if directory does not exist */
+	if (stat(dirn, &st) < 0 && !mkdir_p(dirn, 0755, cl)) {
+		ret = -1;
+		goto out;
+	}
+
+	telem_fh = fopen(fn, mode);
+	if (telem_fh) {
+		ret = 0;
+		goto out;
+	}
+
+	ret = -1;
+
+out:
+	free(dupfn);
+	free(cl);
+	return ret;
+}
+
+int close_telem_file(void)
+{
+	if (telem_fh) {
+		return fclose(telem_fh);
+	}
+
+	return -1;
+}
+
+#endif /* CLEAR_TELEM */

@@ -156,3 +156,13 @@ extern enum cputype cputype;
 extern int filter_memory_errors;
 extern int imc_log;
 extern void set_imc_log(int cputype);
+
+#ifdef CLEAR_TELEM
+#include <sys/stat.h>
+extern int send_record(int severity, char *class, char *payload_fn);
+extern int open_telem_file(const char *fn, char *mode);
+extern int close_telem_file(void);
+extern int load_telem_api(void);
+extern void unload_telem_api(void);
+extern int mkdir_p(const char *path, mode_t mode, char *cl);
+#endif /* CLEAR_TELEM */
